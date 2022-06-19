@@ -1,0 +1,130 @@
+---
+title: "vijver_analysis"
+output: html_document
+date: '2022-05-09'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Setup
+```{r}
+library(glmnet)
+library(tree)
+library(gbm)
+library(randomForest)
+```
+```{r}
+load("VIJVER.Rdata")
+dim(data)
+head(data)
+summary(data[, 1:10])
+```
+
+```{r}
+subset <- data[ ,1:10]
+log.model <- glm(meta ~ ., data = subset, family = 'binomial')
+summary(log.model)
+```
+
+
+## 3. Explore predictive value of genes
+```{r}
+ggplot(data = data, mapping = aes(x=data[, 1], y=data[, 10], color=data[, 1])) +
+  geom_boxplot()
+```
+
+
+
+## 4. Co-linearity
+```{r}
+# Correlation matrix for first 10 variables
+cor_matrix = cor(data[-1])
+ggplot(data = melt(cor_matrix[1:11, 1:11]), aes(x=Var1, y=Var2, fill=value)) + 
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", 
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="Pearson\nCorrelation")+ geom_tile()
+MT1 <- apply(cor_matrix>0.9, 2, sum)
+max(MT1)
+length(MT1[MT1 > 1])/length(MT1)
+pairs(data[,2:8])
+```
+
+## Setup train and test datasets
+```{r}
+set.seed(1)
+meta = data[, 1]
+
+gene_expr = as.matrix(data[-1])
+train = sample(1:nrow(gene_expr), nrow(gene_expr) * 2/3)
+
+test = -train
+```
+
+## Lasso
+```{r}
+# Make the x-grid from 10^10 to 10^-2 in 100 steps
+grid = sample(1:nrow(gene_expr), nrow(gene_expr) * 2/3)
+lasso_mod = glmnet(y=meta[train], x=gene_expr[train, ], alpha=1, family='binomial')
+plot(lasso_mod)
+
+cv.lasso=cv.glmnet(x=gene_expr[train ,], y=meta[train], alpha=1,family="binomial")
+plot(cv.lasso)
+```
+The plot shows that the coefficients are unstable.  
+If the lambda norm goes up, some coefficients which were the highest, go down.
+This is due to co-linearity.
+
+ˆ
+```{r}
+lasso.pred=predict(lasso_mod,s=cv.lasso$lambda.min,newx=gene_expr[test,],type="response")
+plot(lasso.pred~meta[test])
+```
+
+```{r}
+set.seed(1)
+tr=tree(meta~., data=data[train, ])
+plot(tr)
+
+prune.tree = prune.misclass(tr, best=4)
+plot(prune.tree)
+
+predtree = predict(tr, newdata=data[test, ], type="class")
+predtree2 = predict(prune.tree, newdata=data[test, ], type="class")
+
+# calculate performance
+correct = which(predtree == data[test, "meta"])
+performance1 = length(correct) / nrow(data[test, ])
+
+correct2 = which(predtree2 == data[test, "meta"])
+performance2 = length(correct2) / nrow(data[test, ])
+```
+
+```{r}
+set.seed(2)
+
+rf=randomForest(y=data[train, 1], x=data[train, -1], mtry=sqrt(ncol(data[train, -1])), importance=TRUE, ntree=1000, nodesize=20) 
+rf.prediction = predict(rf, newdata = data[test, ], type="class")
+correct.rf = which(rf.prediction == data[test, "meta"])
+performance.rf = length(correct.rf) / nrow(data[test, ])
+
+importance(rf)[order(importance(rf)[, 'MeanDecreaseGini'], decreasing = TRUE), ][1:20, ]
+pdf("varImpPlotRF.pdf")
+varImpPlot(rf)
+dev.off()
+```
+Bagging: use random forest function with all nodes available
+```{r}
+bagged=randomForest(y=data[train, 1], x=data[train, -1], mtry= ncol(data[train, -1]), importance=TRUE, ntree=1000, nodesize=20) 
+bagged.prediction = predict(bagged, newdata = data[test, ], type="class")
+correct.bagged = which(bagged.prediction == data[test, "meta"])
+performance.bagged = length(correct.bagged) / nrow(data[test, ])
+
+importance(rf)[order(importance(bagged)[, 'MeanDecreaseGini'], decreasing = TRUE), ][1:20, ]
+pdf("varImpPlotBagged.pdf")
+varImpPlot(bagged)
+dev.off()
+```
+
+
